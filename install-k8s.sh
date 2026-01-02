@@ -3,6 +3,7 @@
 echo "=====> Running script for setting up kubernetes .."
 
 echo "=====> Enabling IPv4 forwarding .."
+
 # On each node, create the config file
 sudo tee /etc/sysctl.d/k8s.conf <<EOF
 net.ipv4.ip_forward = 1
@@ -17,44 +18,8 @@ sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
 sudo swapoff -a
 
 
-echo "=====> Creating docker configuration file .."
-
-mkdir -p /etc/docker
-touch /etc/docker/daemon.json
-cat > /etc/docker/daemon.json <<EOF
-{
-  "exec-opts": ["native.cgroupdriver=systemd"],
-  "log-driver": "json-file",
-  "log-opts": {
-    "max-size": "100m"
-  },
-  "storage-driver": "overlay2",
-  "data-root": "/mnt/k8s/docker"
-}
-EOF
-
-# Install docker
-source ./install-docker.sh
-
-# Fix package versions
-sudo apt-mark hold docker-ce docker-ce-cli containerd.io
-
-echo "=====> Configuring containerd .."
-# Update containerd configuration to use systemd cgroup driver
-# Generate default config
-sudo containerd config default | sudo tee /etc/containerd/config.toml > /dev/null
-
-# Update root path to /mnt/k8s/containerd
-sudo sed -i 's|root = "/var/lib/containerd"|root = "/mnt/k8s/containerd"|' /etc/containerd/config.toml
-
-# Enable SystemdCgroup under runc options
-sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
-
-# Restart containerd
-sudo systemctl restart containerd
-
-## Install Kubernetes components
-echo "=====> Installing kubernetes binaries .."
+## Install Kubernetes packages
+echo "=====> Installing kubernetes packages .."
 
 sudo apt-get update
 # apt-transport-https may be a dummy package; if so, you can skip that package
@@ -69,44 +34,64 @@ echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.
 
 sudo apt-get update
 sudo apt-get install -y kubelet kubeadm kubectl
+
+echo "=====> Holding kubernetes package versions .."
+# Fix package versions
 sudo apt-mark hold kubelet kubeadm kubectl
 
+echo "=====> Enabling kubelet service .."
+# Enable kubelet service
 sudo systemctl enable --now kubelet
+
 
 echo "=====> Initializing Kubernetes cluster .."
 sudo kubeadm init --pod-network-cidr=192.168.0.0/16
 
 # Set up kubeconfig for the regular user
+echo "=====> Setting up kubeconfig for the user .."
 mkdir -p $HOME/.kube
 sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
 sudo chown $(id -u):$(id -g) $HOME/.kube/config
 
 # Allow scheduling pods on control-plane node (optional, for single-node clusters)
+echo "=====> Allowing scheduling on control-plane node .."
 kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+
 
 # Install calico
 echo "=====> Installing Calico network plugin .."
 kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.31.3/manifests/tigera-operator.yaml
+
+echo "=====> Waiting for Tigera operator to be ready..."
+kubectl wait --for=condition=Available deployment/tigera-operator -n tigera-operator --timeout=300s
+
+echo "=====> Waiting for Tigera CRDs to be registered in the API server..."
+# Give the operator time to create the CRDs
+until kubectl get crd installations.operator.tigera.io 2>/dev/null; do
+  echo "Waiting for installations CRD..."
+  sleep 5
+done
+
+until kubectl get crd apiservers.operator.tigera.io 2>/dev/null; do
+  echo "Waiting for apiservers CRD..."
+  sleep 5
+done
+
+echo "=====> Creating Calico custom resources .."
 kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.31.3/manifests/custom-resources.yaml
+
+echo "=====> Waiting for Calico networking pods to reach 'Ready' state..."
+# Wait for calico-system namespace to exist first
+until kubectl get namespace calico-system 2>/dev/null; do
+  echo "Waiting for calico-system namespace..."
+  sleep 5
+done
+
+kubectl wait --for=condition=Ready pod --all -n tigera-operator --timeout=300s
+kubectl wait --for=condition=Ready pod --all -n calico-system --timeout=600s
+
+echo "=====> Verifying all nodes are Ready..."
+kubectl get nodes
 
 echo "=====> Kubernetes setup completed."
 
-watch kubectl get pods --all-namespaces
-
-
-## Install helm (optional)
-echo "=====> Installing Helm .."
-curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
-chmod 700 get_helm.sh
-./get_helm.sh
-echo "=====> Helm installation completed."
-
-
-## Install ingress-nginx using helm (optional)
-helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-
-echo "=====> Installing ingress-nginx using Helm .."
-helm -n ingress-nginx upgrade -i ingress-nginx --create-namespace ingress-nginx/ingress-nginx
-
-
-echo "=====> Script completed."
