@@ -1,5 +1,13 @@
 #!/bin/bash
 
+# ============================================================
+# Version Configuration
+# ============================================================
+K8S_VERSION="v1.35"          # Kubernetes minor version (used in apt repo URL)
+CALICO_VERSION="v3.31.4"     # Calico full version
+POD_CIDR="192.168.0.0/16"    # Pod network CIDR
+# ============================================================
+
 echo "=====> Running script for setting up kubernetes .."
 
 echo "=====> Enabling IPv4 forwarding .."
@@ -27,10 +35,10 @@ sudo apt-get install -y apt-transport-https ca-certificates curl gpg
 
 # If the directory `/etc/apt/keyrings` does not exist, it should be created before the curl command, read the note below.
 # sudo mkdir -p -m 755 /etc/apt/keyrings
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.35/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+curl -fsSL https://pkgs.k8s.io/core:/stable:/${K8S_VERSION}/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 
 # This overwrites any existing configuration in /etc/apt/sources.list.d/kubernetes.list
-echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.35/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/${K8S_VERSION}/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list
 
 sudo apt-get update
 sudo apt-get install -y kubelet kubeadm kubectl
@@ -45,7 +53,7 @@ sudo systemctl enable --now kubelet
 
 
 echo "=====> Initializing Kubernetes cluster .."
-sudo kubeadm init --pod-network-cidr=192.168.0.0/16
+sudo kubeadm init --pod-network-cidr=${POD_CIDR}
 
 # Set up kubeconfig for the regular user
 echo "=====> Setting up kubeconfig for the user .."
@@ -60,7 +68,7 @@ kubectl taint nodes --all node-role.kubernetes.io/control-plane-
 
 # Install calico
 echo "=====> Installing Calico network plugin .."
-kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.31.3/manifests/tigera-operator.yaml
+kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml
 
 echo "=====> Waiting for Tigera operator to be ready..."
 kubectl wait --for=condition=Available deployment/tigera-operator -n tigera-operator --timeout=300s
@@ -78,7 +86,7 @@ until kubectl get crd apiservers.operator.tigera.io 2>/dev/null; do
 done
 
 echo "=====> Creating Calico custom resources .."
-kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.31.3/manifests/custom-resources.yaml
+kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/custom-resources.yaml
 
 echo "=====> Waiting for Calico networking pods to reach 'Ready' state..."
 # Wait for calico-system namespace to exist first
